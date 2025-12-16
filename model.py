@@ -59,3 +59,57 @@ class DeepSeekConfig:
     num_experts: int = 8 # Total number of experts for Mixture of Experts (MoE)
     num_shared_experts: int = 1 # num_shared_experts : The number of experts that are always active
     top_k_experts: int = 2 # top_k_experts : The number of experts to be selected for each token
+
+class DeepSeekV3(nn.Module):
+    """
+    DeepSeek V3-style LLaMA decoder-only language model.
+
+    Usage:
+        cfg = DeepSeekConfig()
+        model = DeepSeekV3(cfg)
+
+        input_ids: LongTensor (B, T)
+        logits = model(input_ids)
+    """
+    def __init__(self, config: DeepSeekConfig):
+        super().__init__()
+        self.config = config
+
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size,
+            config.hidden_size,
+        ) # (Vocab_Size, Hidden_Size) (49152 x 768)
+
+        self.layers = nn.ModuleList(
+            [DeepSeekBlock(config) for _ in range(config.num_hidden_layers)]
+        )
+
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.lm_head = nn.Linear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False,
+        ) # (Hidden_Size, Vocab_Size) (768 x 49152)
+
+        # tie weights
+        self.lm_head.weight = self.embed_tokens.weight
+
+        # Initialize weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """
+        Initialize weights for Linear and Embedding layers.
+        For Linear layers with NANDeepSeek_SCALE_INIT attribute, scale std by sqrt(2 * num_layers).
+        """
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANDeepSeek_SCALE_INIT'):
+                # Initialize marked linear layers using formula: std = 0.02 * sqrt(2 * num_layers) this 2 x number of layers is because of each block has 2 residual connection. So it actually based on number of residual connection in the model.
+                std *= (2 * self.config.num_hidden_layers) ** -0.5
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std = 1 / math.sqrt(module.weight.shape[1])) # std should be calculated using embedding vector size with formula: std = 1 / sqrt(embedding_vector_size)

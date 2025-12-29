@@ -5,7 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "gradio>=6.2.0",
     "lightning>=2.6.0",
+    "tensorboard>=2.20.0",
     "torch>=2.9.1",
+    "torchinfo>=1.8.0",
+    "torchmetrics>=1.8.2",
+    "torchsummary>=1.5.1",
     "torchvision>=0.24.1",
+    "tqdm>=4.67.1",
+    "transformers>=4.57.3",
 ]

@@ -36,7 +36,7 @@ class DeepSeekConfig:
     vocab_size: int = 49152          # from HF config
     hidden_size: int = 768           # "hidden_size"
     intermediate_size: int = 1536    # "intermediate_size"
-    num_hidden_layers: int = 30      # "num_hidden_layers"
+    num_hidden_layers: int = 12      # "num_hidden_layers" - reduced from 30 to 12 cos model was not fitting in my mac's ram
     num_attention_heads: int = 12     # "num_attention_heads"
     num_key_value_heads: int = 4     # "num_key_value_heads"
     max_position_embeddings: int = 2048  # "max_position_embeddings" - Max sequence length
@@ -461,6 +461,7 @@ class DeepSeekMoE(nn.Module):
         # Router Components
         self.router = nn.Linear(self.hidden_size, self.num_routed_experts)
         self.routing_bias = nn.Parameter(torch.zeros(self.num_routed_experts))
+        self.last_indices = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
@@ -474,6 +475,9 @@ class DeepSeekMoE(nn.Module):
         # Get Top-K Experts per token | (B,T,7) -> (B,T,2)
         routing_probs = torch.sigmoid(routing_logits) # (B,T,7)
         scores, indices = torch.topk(routing_probs, k=self.top_k_experts, dim=-1) # ((B,T,2), (B,T,2))
+        
+        if self.training:
+            self.last_indices = indices.detach()
         
         # Process through selected experts | (B,T,C) -> (B,T,C)
         combined_output = torch.zeros_like(x) # (B,T,C)
@@ -519,7 +523,7 @@ class DeepSeekBlock(nn.Module):
     def __init__(self, config: DeepSeekConfig):
         super().__init__()
         self.attn_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.attn = DeepSeekAttention(config) # Multi-Head Latent Attention (MHLA / MLA)
+        self.attn = MultiHeadLatentAttention(config) # Multi-Head Latent Attention (MHLA / MLA)
         self.mlp_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = DeepSeekMLP(config)
 
@@ -656,3 +660,102 @@ class DeepSeekV3(nn.Module):
         x = self.norm(x)
         logits = self.lm_head(x)  # (B,T,C) -> (B,T,vocab_size)
         return logits, present_key_values
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 100,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        eos_token_id: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Generate text using KV cache for efficient inference.
+        
+        Args:
+            input_ids: (B, T) input token ids
+            max_new_tokens: maximum number of new tokens to generate
+            temperature: sampling temperature
+            top_k: top-k sampling (keep top k tokens)
+            top_p: nucleus sampling (keep tokens with cumulative probability <= top_p)
+            eos_token_id: end-of-sequence token id (stop generation when encountered)
+        
+        Returns:
+            generated_ids: (B, T + max_new_tokens) generated token ids
+        """
+        self.eval()
+        device = input_ids.device
+        B, T = input_ids.shape
+
+        # Start with input_ids
+        generated_ids = input_ids.clone()
+        past_key_values = None
+
+        for step in range(max_new_tokens):
+            # Forward pass with KV cache
+            # On first iteration, use full input_ids. On subsequent iterations, use only last token
+            if past_key_values is None:
+                # First iteration: process full sequence
+                current_input = generated_ids
+            else:
+                # Subsequent iterations: only process the last generated token
+                current_input = generated_ids[:, -1:]
+            
+            logits, past_key_values = self.forward(
+                input_ids=current_input,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+
+            # Get logits for the last token (always the last position in logits)
+            next_token_logits = logits[:, -1, :] / temperature
+
+            # Apply top-k filtering
+            if top_k is not None:
+                indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                next_token_logits[indices_to_remove] = float('-inf')
+
+            # Apply top-p (nucleus) filtering
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+                # Remove tokens with cumulative probability above the threshold
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                next_token_logits[indices_to_remove] = float('-inf')
+
+            # Sample next token
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+
+            # Append to generated sequence
+            generated_ids = torch.cat([generated_ids, next_token], dim=1)
+
+            # Check for EOS token
+            if eos_token_id is not None and (next_token == eos_token_id).all():
+                break
+        
+        return generated_ids
+
+# =========================
+# 8. Quick self-test
+# =========================
+if __name__ == "__main__":
+    # Tiny sanity check: runs a forward pass on random input
+    cfg = DeepSeekConfig()
+    model = DeepSeekV3(cfg)
+
+    B, T = 2, 16
+    x = torch.randint(0, cfg.vocab_size, (B, T))
+
+    with torch.no_grad():
+        logits, _ = model(x)
+
+    print("Input shape :", x.shape)
+    print("Logits shape:", logits.shape)  # should be (2, 16, vocab_size)

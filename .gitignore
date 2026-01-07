@@ -1,0 +1,4 @@
+checkpoints/
+logs/tensorboard/
+.DS_Store
+__pycache__/

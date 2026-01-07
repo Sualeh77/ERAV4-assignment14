@@ -36,7 +36,7 @@ class DeepSeekConfig:
     vocab_size: int = 49152          # from HF config
     hidden_size: int = 768           # "hidden_size"
     intermediate_size: int = 1536    # "intermediate_size"
-    num_hidden_layers: int = 12      # "num_hidden_layers" - reduced from 30 to 12 cos model was not fitting in my mac's ram
+    num_hidden_layers: int = 8      # "num_hidden_layers" - reduced from 30 to 12 cos model was not fitting in my mac's ram
     num_attention_heads: int = 12     # "num_attention_heads"
     num_key_value_heads: int = 4     # "num_key_value_heads"
     max_position_embeddings: int = 2048  # "max_position_embeddings" - Max sequence length

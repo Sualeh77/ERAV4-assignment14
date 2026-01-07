@@ -64,6 +64,51 @@ class TextDataset(Dataset):
         y = chunk[1:]
         return x, y
 
+class ResumableDataLoader(DataLoader):
+    """
+    DataLoader that supports resuming mid-epoch by tracking iteration count
+    and fast-forwarding on start.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._current_iteration = 0
+        self._skip_batches = 0
+
+    def __iter__(self):
+        # Create the standard iterator
+        iterator = super().__iter__()
+        
+        # Fast forward if needed
+        if self._skip_batches > 0:
+            logger.info(f"Resuming dataloader: skipping {self._skip_batches} batches...")
+            # We must deplete the iterator to skip
+            for _ in range(self._skip_batches):
+                try:
+                    next(iterator)
+                except StopIteration:
+                    break
+            
+            # Set current value to skipped value
+            self._current_iteration = self._skip_batches
+            
+            # Reset skip so subsequent epochs don't skip
+            self._skip_batches = 0
+        else:
+            self._current_iteration = 0
+
+        # Yield and track
+        for batch in iterator:
+            yield batch
+            self._current_iteration += 1
+
+    def state_dict(self):
+        # Capture the state
+        return {'iteration': self._current_iteration}
+
+    def load_state_dict(self, state_dict):
+        # Restore the state
+        self._skip_batches = state_dict.get('iteration', 0)
+
 class WarmupStableDecayLR(L.Callback):
     """
     Warmup Stable Decay (WSD) learning rate schedule.
@@ -167,6 +212,11 @@ class DeepSeekV3Module(L.LightningModule):
         
         return loss
 
+    def on_save_checkpoint(self, checkpoint):
+        logger.info(f"Saving checkpoint at step {self.global_step}")
+
+
+    @torch.no_grad()
     def update_moe_biases(self):
         """
         Update MoE routing bias terms based on expert load.
@@ -210,48 +260,58 @@ class DeepSeekV3Module(L.LightningModule):
 
     def generate_and_log(self):
         """Generate text and log it."""
-        self.model.eval()
-        with torch.no_grad():
-            # Tokenize prompt
-            prompt_ids = self.tokenizer.encode(
-                self.example_prompt,
-                return_tensors='pt',
-                add_special_tokens=False
-            ).to(self.device)
+        try:
+            self.model.eval()
+            with torch.no_grad():
+                # Tokenize prompt
+                prompt_ids = self.tokenizer.encode(
+                    self.example_prompt,
+                    return_tensors='pt',
+                    add_special_tokens=False
+                ).to(self.device)
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                t0 = time.perf_counter()
 
-            # Generate
-            generated_ids = self.model.generate(
-                prompt_ids,
-                max_new_tokens=50,
-                temperature=0.8,
-                top_k=50,
-            )
+                logger.info(f"Starting generation for prompt: '{self.example_prompt}'")
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                # Generate
+                generated_ids = self.model.generate(
+                    prompt_ids,
+                    max_new_tokens=50,
+                    temperature=0.8,
+                    top_k=50,
+                )
 
-            dt = time.perf_counter() - t0
-            new_tokens = generated_ids.shape[1] - prompt_ids.shape[1]
-            toks_per_sec = new_tokens / dt if dt > 0 else float("inf")
-            logger.info(f"Generation | new_tokens: {new_tokens} | dt: {dt*1000:.2f} ms | tok/s: {toks_per_sec:,.0f}")
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
-            # Decode
-            generated_text = self.tokenizer.decode(
-                generated_ids[0].cpu().tolist(),
-                skip_special_tokens=True
-            )
+                dt = time.perf_counter() - t0
+                new_tokens = generated_ids.shape[1] - prompt_ids.shape[1]
+                toks_per_sec = new_tokens / dt if dt > 0 else float("inf")
+                logger.info(f"Generation | new_tokens: {new_tokens} | dt: {dt*1000:.2f} ms | tok/s: {toks_per_sec:,.0f}")
 
-            # Log to console and file
-            logger.info(f"\n{'='*80}")
-            logger.info(f"Step {self.global_step + 1} - Generated text:")
-            logger.info(f"{generated_text}")
-            logger.info(f"{'='*80}\n")
-        
-        self.model.train()
+                # Decode
+                generated_text = self.tokenizer.decode(
+                    generated_ids[0].cpu().tolist(),
+                    skip_special_tokens=True
+                )
+
+                # Log to console and file
+                logger.info(f"\n{'='*80}")
+                logger.info(f"Step {self.global_step + 1} - Generated text:")
+                logger.info(f"{generated_text}")
+                logger.info(f"{'='*80}\n")
+            
+            self.model.train()
+        except Exception as e:
+            logger.error(f"Error during text generation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Ensure model is back in train mode even if generation fails
+            self.model.train()
+
 
     def configure_optimizers(self):
         """Configure optimizer with AdamW."""
@@ -295,20 +355,26 @@ def main():
     block_size = 512 # DeepSeekV3 config.max_position_embeddings = 2048
     batch_size = 4
     num_workers = 8
-    max_steps = 10  # 10000
+    max_steps = 10000  # 10000
 
-    predict_every = 500 # Make it 500 for final training.
-    resume_from_checkpoint = None  # Set to checkpoint path to resume, or None for fresh training
+    predict_every = 2500 # Make it 500 for final training.
+    resume_from_checkpoint = "checkpoints/deepseekv3-step=02500-train_loss=0.3072.ckpt"  # Set to checkpoint path to resume, or None for fresh training
 
     # Training hyperparameters from paper
     warmup_steps = 1000
-    peak_lr = 5e-4
+    peak_lr = 1e-4 # Reduced from 5e-4 to 1e-4 after 5k steps as the loss hit the plateau.
+
     total_steps = max_steps
 
     # Setup logging
     global logger
     logger, log_file = setup_logging(log_dir)
     logger.info(f"Logging to: {log_file}")
+
+    # MacOS specific handling for DataLoader
+    if sys.platform == 'darwin':
+        logger.warning("MacOS detected: Forcing num_workers=0 to avoid multiprocessing deadlocks")
+        num_workers = 0
 
     # Load tokenizer
     logger.info("Loading tokenizer...")
@@ -333,12 +399,13 @@ def main():
     # Create dataset
     logger.info(f"Loading dataset from: {data_file}")
     dataset = TextDataset(data_file, tokenizer, block_size=block_size)
-    dataloader = DataLoader(
+    dataloader = ResumableDataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=True, # Note: shuffle=True with fast-forwarding might not be perfectly reproducible without fixed seed per epoch, but it works for resuming
         num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=False,
     )
 
     # Create Lightning module
@@ -371,7 +438,7 @@ def main():
         dirpath=output_dir,
         filename='deepseekv3-{step:05d}-{train_loss:.4f}',
         monitor='train_loss',
-        save_top_k=3,
+        save_top_k=1,
         mode='min',
         every_n_train_steps=predict_every,
         save_last=True,
@@ -405,6 +472,7 @@ def main():
         gradient_clip_val=1.0,
         log_every_n_steps=50,
         enable_checkpointing=True,
+        accumulate_grad_batches=8, # After 5k steps introduced gradient accumulation.
     )
 
     # Train

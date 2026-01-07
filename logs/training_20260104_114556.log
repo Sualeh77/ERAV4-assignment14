@@ -1,0 +1,31 @@
+2026-01-04 11:45:56,756 - INFO - Logging to: logs/training_20260104_114556.log
+2026-01-04 11:45:56,757 - INFO - Loading tokenizer...
+2026-01-04 11:45:57,605 - INFO - Loading model config...
+2026-01-04 11:45:57,605 - INFO - Loading dataset from: /Users/qureshsu/Learning/TSAI/ERAV4/session14/data/input.txt
+2026-01-04 11:45:58,033 - INFO - Initializing model...
+2026-01-04 11:46:02,391 - INFO - Starting training...
+2026-01-04 11:46:18,699 - INFO - 
+================================================================================
+2026-01-04 11:46:18,699 - INFO - MODEL SUMMARY
+2026-01-04 11:46:18,699 - INFO - ================================================================================
+2026-01-04 11:46:18,699 - INFO - Model: DeepSeekV3
+2026-01-04 11:46:18,699 - INFO - Total parameters: 271,866,736
+2026-01-04 11:46:18,699 - INFO - Trainable parameters: 271,866,736
+2026-01-04 11:46:18,699 - INFO - Block size: 512
+2026-01-04 11:46:18,699 - INFO - Warmup steps: 1000
+2026-01-04 11:46:18,699 - INFO - Peak learning rate: 0.0005
+2026-01-04 11:46:18,699 - INFO - Total training steps: 10
+2026-01-04 11:46:18,699 - INFO - Predict every: 500 steps
+2026-01-04 11:46:18,699 - INFO - ================================================================================
+
+2026-01-04 11:46:24,180 - INFO - step 2 | dt: 5477.24 ms
+2026-01-04 11:46:28,520 - INFO - step 3 | dt: 4335.57 ms
+2026-01-04 11:46:32,128 - INFO - step 4 | dt: 3604.55 ms
+2026-01-04 11:46:35,495 - INFO - step 5 | dt: 3363.58 ms
+2026-01-04 11:46:38,710 - INFO - step 6 | dt: 3212.50 ms
+2026-01-04 11:46:41,854 - INFO - step 7 | dt: 3142.00 ms
+2026-01-04 11:46:44,873 - INFO - step 8 | dt: 3016.63 ms
+2026-01-04 11:46:47,902 - INFO - step 9 | dt: 3022.51 ms
+2026-01-04 11:46:50,895 - INFO - step 10 | dt: 2990.22 ms
+2026-01-04 11:46:53,444 - INFO - step 11 | dt: 2546.08 ms
+2026-01-04 11:46:59,230 - INFO - Final checkpoint saved: checkpoints/deepseekv3-final-step-00010.ckpt
